@@ -1,0 +1,10 @@
+{
+  "name": "monai-dev",
+  "image": "monai-dev",
+  "port": 8888,
+  "gpus": "all",
+  "memory": "8g",
+  "shm_size": "8g",
+  "mount": "~/monai-workspace",
+  "container_dir": "/workspace"
+}

@@ -3,36 +3,48 @@ name: build-and-run-docker-image
 on:
   workflow_dispatch:
     inputs:
-      use_gpu:
-        description: Run with GPU
-        type: boolean
-        default: true
+      folder:
+        description: Folder containing Dockerfile and template.json
+        default: monai
 
 jobs:
-  build-run:
+  deploy:
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build image
-        run: docker build -t monai-dev:latest -t monai-dev:${{ github.sha }} .
-
-      - name: Replace running container
+      - name: Build and run from template
         env:
+          FOLDER: ${{ inputs.folder }}
           JUPYTER_TOKEN: ${{ secrets.JUPYTER_TOKEN }}
         run: |
-          docker rm -f monai-dev || true
-          GPU=""
-          if [ "${{ inputs.use_gpu }}" = "true" ]; then GPU="--gpus all"; fi
-          mkdir -p "$HOME/monai-workspace"
-          docker run -d --name monai-dev $GPU --shm-size=8g \
-            -p 127.0.0.1:8888:8888 \
-            -e JUPYTER_TOKEN \
-            -v "$HOME/monai-workspace":/workspace \
-            --restart unless-stopped monai-dev:latest
+          set -euo pipefail
+          case "$FOLDER" in /*|*..*) echo "Invalid folder"; exit 1;; esac
+          CFG="$FOLDER/template.json"
+          [ -f "$CFG" ] && [ -f "$FOLDER/Dockerfile" ] || { echo "Missing Dockerfile or template.json in $FOLDER"; exit 1; }
 
-      - name: Check
-        run: |
+          NAME=$(jq -r '.name' "$CFG")
+          IMAGE=$(jq -r '.image // .name' "$CFG")
+          PORT=$(jq -r '.port // 8888' "$CFG")
+          GPUS=$(jq -r '.gpus // "none"' "$CFG")
+          MEMORY=$(jq -r '.memory // empty' "$CFG")
+          SHM=$(jq -r '.shm_size // "2g"' "$CFG")
+          MOUNT=$(jq -r '.mount' "$CFG")
+          CDIR=$(jq -r '.container_dir // "/workspace"' "$CFG")
+          MOUNT="${MOUNT/#\~/$HOME}"
+
+          docker build -t "$IMAGE:latest" -t "$IMAGE:$GITHUB_SHA" "$FOLDER"
+
+          ARGS=(-d --name "$NAME" --restart unless-stopped --shm-size "$SHM"
+                -p "127.0.0.1:$PORT:8888" -e JUPYTER_TOKEN -v "$MOUNT:$CDIR")
+          [ -n "$MEMORY" ] && ARGS+=(--memory "$MEMORY")
+          if [ "$GPUS" = "all" ]; then ARGS+=(--gpus all)
+          elif [ "$GPUS" != "none" ] && [ -n "$GPUS" ]; then ARGS+=(--gpus "\"device=$GPUS\""); fi
+
+          mkdir -p "$MOUNT"
+          docker rm -f "$NAME" || true
+          docker run "${ARGS[@]}" "$IMAGE:latest"
+
           sleep 5
-          docker ps --filter name=monai-dev
-          docker logs --tail 20 monai-dev
+          docker ps --filter "name=$NAME"
+          docker logs --tail 20 "$NAME"

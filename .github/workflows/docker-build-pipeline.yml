@@ -1,0 +1,38 @@
+name: build-and-run-docker-image
+
+on:
+  workflow_dispatch:
+    inputs:
+      use_gpu:
+        description: Run with GPU
+        type: boolean
+        default: true
+
+jobs:
+  build-run:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t monai-dev:latest -t monai-dev:${{ github.sha }} .
+
+      - name: Replace running container
+        env:
+          JUPYTER_TOKEN: ${{ secrets.JUPYTER_TOKEN }}
+        run: |
+          docker rm -f monai-dev || true
+          GPU=""
+          if [ "${{ inputs.use_gpu }}" = "true" ]; then GPU="--gpus all"; fi
+          mkdir -p "$HOME/monai-workspace"
+          docker run -d --name monai-dev $GPU --shm-size=8g \
+            -p 127.0.0.1:8888:8888 \
+            -e JUPYTER_TOKEN \
+            -v "$HOME/monai-workspace":/workspace \
+            --restart unless-stopped monai-dev:latest
+
+      - name: Check
+        run: |
+          sleep 5
+          docker ps --filter name=monai-dev
+          docker logs --tail 20 monai-dev
